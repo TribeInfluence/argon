@@ -159,17 +159,20 @@ module Argon
             end
           end
 
-          if self.send(field) != from
-            if on_failed_transition
-              self.on_failed_transition(field: field, action: action, from: from, to: to)
-            end
-            raise Argon::InvalidTransitionError.new("Invalid state transition. #{ self.class.name }##{ self.send(self.class.primary_key.to_sym) } cannot perform '#{action}' on #{field}='#{from}'")
-          end
-
+          before_lock_state = self.send(field)
           begin
             self.with_lock do
-              if self.send(field) != from
-                raise Argon::InvalidTransitionError.new("Invalid state transition. #{ self.class.name }##{ self.send(self.class.primary_key.to_sym) } cannot perform '#{action}' on #{field}='#{from}'")
+              current_state = self.send(field)
+
+              if before_lock_state != current_state
+                identifier = self.send(self.class.primary_key.to_sym)
+                error_msg = "State of #{ self.class.name }##{ identifier } changed from #{before_lock_state} to #{current_state} while waiting for a lock"
+                raise Argon::ConcurrentProcessingError.new(error_msg)
+              end
+
+              if current_state != from
+                identifier = self.send(self.class.primary_key.to_sym)
+                raise Argon::InvalidTransitionError.new("Invalid state transition. #{ self.class.name }##{ identifier } cannot perform '#{action}' on #{field}='#{current_state}'")
               end
 
               self.update_column(field, self.class.send("#{ field.to_s.pluralize }").map{|v| [v[0],v[1]]}.to_h[to])
@@ -183,9 +186,7 @@ module Argon
                 end
               end
 
-              unless block.nil?
-                block.call
-              end
+              block.call unless block.nil?
             end
           rescue => e
             if on_failed_transition
